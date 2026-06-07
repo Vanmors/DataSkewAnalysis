@@ -10,6 +10,7 @@ services:
       - "4040:4040"
     volumes:
       - ./target:/opt/spark-apps
+      - ./spark-warehouse:/opt/spark-warehouse
     networks:
       - spark-network
 
@@ -25,6 +26,8 @@ services:
       - spark-master
     ports:
       - "8091:8081"
+    volumes:
+      - ./spark-warehouse:/opt/spark-warehouse
     networks:
       - spark-network
 
@@ -40,6 +43,8 @@ services:
       - spark-master
     ports:
       - "8092:8081"
+    volumes:
+      - ./spark-warehouse:/opt/spark-warehouse
     networks:
       - spark-network
 
@@ -55,9 +60,12 @@ services:
       - spark-master
     ports:
       - "8093:8081"
+    volumes:
+      - ./spark-warehouse:/opt/spark-warehouse
     networks:
       - spark-network
 
 networks:
   spark-network:
     driver: bridge
+

@@ -3,6 +3,9 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 .kotlin
+/spark-warehouse
+.idea
+benchmark_results.csv
 
 ### IntelliJ IDEA ###
 .idea/modules.xml
