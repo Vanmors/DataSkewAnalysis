@@ -9,25 +9,19 @@ import org.apache.spark.sql.functions;
 import org.apache.spark.sql.types.DataTypes;
 
 /**
- * Бенчмарк Patch-based Repartitioning.
- * На основе: Kassela E., Konstantinou I., Koziris N. (2025).
- *   «Accelerating Distributed Repartition Joins on Skewed Datasets via Patch-Based Shuffling».
+ * Patch-based Repartitioning, вариант V2 с PATCH_SIZE = 500_000.
  *
- * Алгоритм:
- *   1) Определяем скошенные ключи (частота > SKEW_THRESHOLD * total).
- *   2) Для каждого скошенного ключа вычисляем число патчей: ceil(count / PATCH_SIZE).
- *   3) Каждой строке скошенного ключа назначаем patch_id через rand()
- *      (равномерное случайное распределение по [0, num_patches)).
- *      — Это заменяет row_number() по окну, который собрал бы все 7M строк
- *        в одну партицию и вызвал OOM/выплёскивание на диск.
- *   4) Реплицируем строки users для скошенных ключей по всем patch_id (explode sequence).
- *   5) Обычным строкам и их users назначаем patch_id = 0.
- *   6) Join по составному ключу (user_id, patch_id).
+ * Алгоритм идентичен оригинальному PatchBasedBenchmark; цель копии —
+ * исследовать чувствительность метода к размеру патча на multi-skew данных,
+ * не трогая baseline-реализацию.
+ *
+ * Для STRONG-распределения (3.5M строк на самом горячем ключе)
+ * num_patches = 7, что близко к числу солей в SaltingBenchmark (10).
  */
-public class PatchBasedBenchmark {
+public class PatchBasedBenchmarkV2 {
 
     private static final double SKEW_THRESHOLD = 0.01;
-    private static final int PATCH_SIZE = 50_000;
+    private static final int PATCH_SIZE = 500_000;
 
     public static BenchmarkResult run(final SparkSession spark,
                                       final Dataset<Row> transactions,
@@ -36,7 +30,7 @@ public class PatchBasedBenchmark {
                                       final double skewFraction) {
         final long totalTransactions = transactions.count();
 
-        return BenchmarkUtils.measure(spark, "Patch-based", skewLevel, skewFraction, () -> {
+        return BenchmarkUtils.measure(spark, "Patch-based-500K", skewLevel, skewFraction, () -> {
             final long threshold = (long) (totalTransactions * SKEW_THRESHOLD);
 
             final Dataset<Row> keyCounts = transactions
@@ -51,14 +45,12 @@ public class PatchBasedBenchmark {
 
             final Dataset<Row> skewedKeys = keyCounts.select("user_id");
 
-            // Разделяем transactions на скошенные и обычные
             final Dataset<Row> txSkewed = transactions.join(functions.broadcast(skewedKeys), "user_id");
             final Dataset<Row> txNormal = transactions.join(
                     functions.broadcast(skewedKeys),
                     transactions.col("user_id").equalTo(skewedKeys.col("user_id")),
                     "left_anti");
 
-            // Patch-id для скошенных: rand() % num_patches — без window function
             final Dataset<Row> txSkewedPatched = txSkewed
                     .join(functions.broadcast(keyCounts.select("user_id", "num_patches")), "user_id")
                     .withColumn("patch_id",
@@ -69,7 +61,6 @@ public class PatchBasedBenchmark {
             final Dataset<Row> txNormalPatched = txNormal.withColumn("patch_id", functions.lit(0));
             final Dataset<Row> allTransactions = txSkewedPatched.unionByName(txNormalPatched);
 
-            // Реплицируем users для скошенных ключей по всем patch_id
             final Dataset<Row> skewedUsersExpanded = users
                     .join(functions.broadcast(keyCounts.select("user_id", "num_patches")), "user_id")
                     .withColumn("patch_id",
@@ -78,7 +69,6 @@ public class PatchBasedBenchmark {
                                     functions.col("num_patches").minus(1))))
                     .drop("num_patches");
 
-            // Обычные users получают patch_id = 0
             final Dataset<Row> normalUsers = users
                     .join(functions.broadcast(skewedKeys),
                             users.col("user_id").equalTo(skewedKeys.col("user_id")),
